@@ -1,4 +1,8 @@
-from micropython import const
+try:
+    from micropython import const
+except ImportError:
+    def const(value):
+        return value
 import io
 import sys
 import time
