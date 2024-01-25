@@ -262,6 +262,7 @@ def basicConfig(
         logger.setLevel(level)
         logger.addHandler(handler)
 
+
 def getLevelName(level):
     """
     Return the textual or numeric representation of logging level 'level'.
@@ -287,6 +288,7 @@ def getLevelName(level):
     if result is not None:
         return result
     return "Level %s" % level
+
 
 if hasattr(sys, "atexit"):
     sys.atexit(shutdown)
