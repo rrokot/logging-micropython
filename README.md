@@ -8,13 +8,10 @@ from [micropython-lib](https://github.com/micropython/micropython-lib).
 
 ## Differences from micropython-lib
 
-- Imports on CPython: `micropython.const` falls back to a no-op when the `micropython`
-  module is missing, and `exception()` prints tracebacks with `traceback` where
-  `sys.print_exception` does not exist.
-- A handler without a formatter uses a default `Formatter` instead of failing.
-- `getLevelName()` works as in CPython: a level number gives its name, a name gives its
-  number, and levels registered with `addLevelName()` are included.
-- `exception(..., exc_info=False)` logs the message without a traceback.
+- Works on regular Python, not only on MicroPython.
+- `StreamHandler()` and `FileHandler()` work without `setFormatter()`, using the default format.
+- `exception()` prints tracebacks on regular Python too; `exc_info=False` turns the traceback off.
+- Adds `getLevelName()`: `getLevelName(40)` → `"ERROR"`, `getLevelName("ERROR")` → `40`.
 
 ## Installation
 
