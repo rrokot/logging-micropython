@@ -264,29 +264,13 @@ def basicConfig(
 
 
 def getLevelName(level):
-    """
-    Return the textual or numeric representation of logging level 'level'.
-
-    If the level is one of the predefined levels (CRITICAL, ERROR, WARNING,
-    INFO, DEBUG) then you get the corresponding string. If you have
-    associated levels with names using addLevelName then the name you have
-    associated with 'level' is returned.
-
-    If a numeric value corresponding to one of the defined levels is passed
-    in, the corresponding string representation is returned.
-
-    If a string representation of the level is passed in, the corresponding
-    numeric value is returned.
-
-    If no matching numeric or string value is passed in, the string
-    'Level %s' % level is returned.
-    """
-    result = _level_dict.get(level)
-    if result is not None:
-        return result
-    result = _level_dict.get(level)
-    if result is not None:
-        return result
+    # Like CPython: a level number gives its name, a level name gives its number, and
+    # anything unknown gives "Level <value>". Names added by addLevelName are included.
+    if level in _level_dict:
+        return _level_dict[level]
+    for number, name in _level_dict.items():
+        if name == level:
+            return number
     return "Level %s" % level
 
 
