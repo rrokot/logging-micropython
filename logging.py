@@ -168,11 +168,16 @@ class Logger:
         tb = None
         if isinstance(exc_info, BaseException):
             tb = exc_info
-        elif hasattr(sys, "exc_info"):
+        elif exc_info and hasattr(sys, "exc_info"):
             tb = sys.exc_info()[1]
         if tb:
             buf = io.StringIO()
-            sys.print_exception(tb, buf)
+            if hasattr(sys, "print_exception"):
+                sys.print_exception(tb, buf)
+            else:
+                # CPython has no sys.print_exception.
+                import traceback
+                traceback.print_exception(type(tb), tb, tb.__traceback__, file=buf)
             self.log(ERROR, buf.getvalue())
 
     def addHandler(self, handler):
@@ -216,8 +221,8 @@ def critical(msg, *args):
     getLogger().critical(msg, *args)
 
 
-def exception(msg, *args):
-    getLogger().exception(msg, *args)
+def exception(msg, *args, exc_info=True):
+    getLogger().exception(msg, *args, exc_info=exc_info)
 
 
 def shutdown():
