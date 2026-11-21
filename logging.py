@@ -1,8 +1,4 @@
-try:
-    from micropython import const
-except ImportError:
-    def const(value):
-        return value
+from micropython import const
 import io
 import sys
 import time
@@ -29,6 +25,10 @@ _loggers = {}
 _stream = sys.stderr
 _default_fmt = "%(levelname)s:%(name)s:%(message)s"
 _default_datefmt = "%Y-%m-%d %H:%M:%S"
+_time_ns = getattr(time, "time_ns", None)
+# A port whose time.time() gives whole seconds may have single precision floats, which keep
+# the time of day to a minute at best: the time of a record stays an int there.
+_float_time = isinstance(time.time(), float)
 
 
 class LogRecord:
@@ -37,8 +37,13 @@ class LogRecord:
         self.levelno = level
         self.levelname = _level_dict[level]
         self.message = message
-        self.ct = time.time()
-        self.msecs = int((self.ct - int(self.ct)) * 1000)
+        if _time_ns:
+            ns = _time_ns()
+            self.msecs = ns // 1_000_000 % 1000
+            self.ct = ns / 1_000_000_000 if _float_time else ns // 1_000_000_000
+        else:
+            self.ct = time.time()
+            self.msecs = int((self.ct - int(self.ct)) * 1000)
         self.asctime = None
 
 
@@ -89,6 +94,10 @@ class FileHandler(StreamHandler):
 
 
 class Formatter:
+    # What _strftime() knows: the directives of the default date format.
+    _time_fields = {"Y": (0, "%04d"), "m": (1, "%02d"), "d": (2, "%02d"),
+                    "H": (3, "%02d"), "M": (4, "%02d"), "S": (5, "%02d")}
+
     def __init__(self, fmt=None, datefmt=None):
         self.fmt = _default_fmt if fmt is None else fmt
         self.datefmt = _default_datefmt if datefmt is None else datefmt
@@ -99,7 +108,30 @@ class Formatter:
     def formatTime(self, datefmt, record):
         if hasattr(time, "strftime"):
             return time.strftime(datefmt, time.localtime(record.ct))
-        return None
+        return self._strftime(datefmt, time.localtime(int(record.ct)))
+
+    @classmethod
+    def _strftime(cls, datefmt, t):
+        # time.strftime() for MicroPython, which has none: %Y %m %d %H %M %S and %%; any other
+        # directive stays as it is.
+        out = []
+        i = 0
+        while i < len(datefmt):
+            c = datefmt[i]
+            if c == "%" and i + 1 < len(datefmt):
+                d = datefmt[i + 1]
+                i += 2
+                if d in cls._time_fields:
+                    index, fmt = cls._time_fields[d]
+                    out.append(fmt % t[index])
+                elif d == "%":
+                    out.append("%")
+                else:
+                    out.append("%" + d)
+            else:
+                out.append(c)
+                i += 1
+        return "".join(out)
 
     def format(self, record):
         if self.usesTime():
@@ -135,12 +167,37 @@ class Logger:
     def getEffectiveLevel(self):
         return self.level or getLogger().level or _DEFAULT_LEVEL
 
-    def log(self, level, msg, *args):
+    @staticmethod
+    def _traceback(exc_info):
+        # The text of the exception exc_info names, in each of the ways CPython's logging takes it:
+        # the exception itself, a sys.exc_info() tuple, or true for the one being handled. "" when
+        # there is none, or when the port has no sys.exc_info() to tell which it is (ESP32 builds
+        # have none): pass the exception itself there.
+        if isinstance(exc_info, BaseException):
+            exc = exc_info
+        elif isinstance(exc_info, tuple):
+            exc = exc_info[1]
+        elif hasattr(sys, "exc_info"):
+            exc = sys.exc_info()[1]
+        else:
+            exc = None
+        if exc is None:
+            return ""
+        buf = io.StringIO()
+        sys.print_exception(exc, buf)
+        return buf.getvalue().rstrip("\n")
+
+    def log(self, level, msg, *args, exc_info=None):
         if self.isEnabledFor(level):
             if args:
                 if isinstance(args[0], dict):
                     args = args[0]
                 msg = msg % args
+            if exc_info:
+                text = self._traceback(exc_info)
+                if text:
+                    # as CPython has it: the traceback on the lines after the message
+                    msg = "%s\n%s" % (msg, text)
             self.record.set(self.name, level, msg)
             handlers = self.handlers
             if not handlers:
@@ -148,37 +205,23 @@ class Logger:
             for h in handlers:
                 h.emit(self.record)
 
-    def debug(self, msg, *args):
-        self.log(DEBUG, msg, *args)
+    def debug(self, msg, *args, exc_info=None):
+        self.log(DEBUG, msg, *args, exc_info=exc_info)
 
-    def info(self, msg, *args):
-        self.log(INFO, msg, *args)
+    def info(self, msg, *args, exc_info=None):
+        self.log(INFO, msg, *args, exc_info=exc_info)
 
-    def warning(self, msg, *args):
-        self.log(WARNING, msg, *args)
+    def warning(self, msg, *args, exc_info=None):
+        self.log(WARNING, msg, *args, exc_info=exc_info)
 
-    def error(self, msg, *args):
-        self.log(ERROR, msg, *args)
+    def error(self, msg, *args, exc_info=None):
+        self.log(ERROR, msg, *args, exc_info=exc_info)
 
-    def critical(self, msg, *args):
-        self.log(CRITICAL, msg, *args)
+    def critical(self, msg, *args, exc_info=None):
+        self.log(CRITICAL, msg, *args, exc_info=exc_info)
 
     def exception(self, msg, *args, exc_info=True):
-        self.log(ERROR, msg, *args)
-        tb = None
-        if isinstance(exc_info, BaseException):
-            tb = exc_info
-        elif exc_info and hasattr(sys, "exc_info"):
-            tb = sys.exc_info()[1]
-        if tb:
-            buf = io.StringIO()
-            if hasattr(sys, "print_exception"):
-                sys.print_exception(tb, buf)
-            else:
-                # CPython has no sys.print_exception.
-                import traceback
-                traceback.print_exception(type(tb), tb, tb.__traceback__, file=buf)
-            self.log(ERROR, buf.getvalue())
+        self.log(ERROR, msg, *args, exc_info=exc_info)
 
     def addHandler(self, handler):
         self.handlers.append(handler)
@@ -197,28 +240,28 @@ def getLogger(name=None):
     return _loggers[name]
 
 
-def log(level, msg, *args):
-    getLogger().log(level, msg, *args)
+def log(level, msg, *args, exc_info=None):
+    getLogger().log(level, msg, *args, exc_info=exc_info)
 
 
-def debug(msg, *args):
-    getLogger().debug(msg, *args)
+def debug(msg, *args, exc_info=None):
+    getLogger().debug(msg, *args, exc_info=exc_info)
 
 
-def info(msg, *args):
-    getLogger().info(msg, *args)
+def info(msg, *args, exc_info=None):
+    getLogger().info(msg, *args, exc_info=exc_info)
 
 
-def warning(msg, *args):
-    getLogger().warning(msg, *args)
+def warning(msg, *args, exc_info=None):
+    getLogger().warning(msg, *args, exc_info=exc_info)
 
 
-def error(msg, *args):
-    getLogger().error(msg, *args)
+def error(msg, *args, exc_info=None):
+    getLogger().error(msg, *args, exc_info=exc_info)
 
 
-def critical(msg, *args):
-    getLogger().critical(msg, *args)
+def critical(msg, *args, exc_info=None):
+    getLogger().critical(msg, *args, exc_info=exc_info)
 
 
 def exception(msg, *args, exc_info=True):
