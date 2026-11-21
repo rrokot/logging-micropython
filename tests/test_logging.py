@@ -51,6 +51,7 @@ def test_the_time_is_formatted_without_strftime_too():
     t = (2026, 11, 21, 13, 5, 9, 5, 325)
     assert logging.Formatter._strftime("%Y-%m-%d %H:%M:%S", t) == "2026-11-21 13:05:09"
     assert logging.Formatter._strftime("%d.%m %% %j", t) == "21.11 % %j"   # an unknown directive stays
+    assert logging.Formatter._strftime("%%Y=%Y", t) == "%Y=2026"            # %% is a %, then a Y
 
 
 def test_msecs_come_from_the_nanoseconds():

@@ -95,8 +95,8 @@ class FileHandler(StreamHandler):
 
 class Formatter:
     # What _strftime() knows: the directives of the default date format.
-    _time_fields = {"Y": (0, "%04d"), "m": (1, "%02d"), "d": (2, "%02d"),
-                    "H": (3, "%02d"), "M": (4, "%02d"), "S": (5, "%02d")}
+    _time_fields = {"%Y": (0, "%04d"), "%m": (1, "%02d"), "%d": (2, "%02d"),
+                    "%H": (3, "%02d"), "%M": (4, "%02d"), "%S": (5, "%02d")}
 
     def __init__(self, fmt=None, datefmt=None):
         self.fmt = _default_fmt if fmt is None else fmt
@@ -113,25 +113,15 @@ class Formatter:
     @classmethod
     def _strftime(cls, datefmt, t):
         # time.strftime() for MicroPython, which has none: %Y %m %d %H %M %S and %%; any other
-        # directive stays as it is.
-        out = []
-        i = 0
-        while i < len(datefmt):
-            c = datefmt[i]
-            if c == "%" and i + 1 < len(datefmt):
-                d = datefmt[i + 1]
-                i += 2
-                if d in cls._time_fields:
-                    index, fmt = cls._time_fields[d]
-                    out.append(fmt % t[index])
-                elif d == "%":
-                    out.append("%")
-                else:
-                    out.append("%" + d)
-            else:
-                out.append(c)
-                i += 1
-        return "".join(out)
+        # directive stays as it is. A directive at a time, not a character: in Python that is
+        # what a board pays for.
+        if datefmt == _default_datefmt:
+            return "%04d-%02d-%02d %02d:%02d:%02d" % t[:6]
+        text = datefmt.replace("%%", "\0")   # %%Y is a %, then a Y
+        for directive, (index, fmt) in cls._time_fields.items():
+            if directive in text:
+                text = text.replace(directive, fmt % t[index])
+        return text.replace("\0", "%")
 
     def format(self, record):
         if self.usesTime():
@@ -187,41 +177,52 @@ class Logger:
         sys.print_exception(exc, buf)
         return buf.getvalue().rstrip("\n")
 
+    # The level helpers pass their arguments on as a tuple, never as *args with exc_info=: a
+    # call of that form, or a function with more state than fits the C stack, has MicroPython put
+    # the function's state on the heap at each call, some 200 us on a board with PSRAM.
+    def _log(self, level, msg, args, exc_info):
+        if args:
+            if isinstance(args[0], dict):
+                args = args[0]
+            msg = msg % args
+        if exc_info:
+            msg = self._with_traceback(msg, exc_info)
+        self.record.set(self.name, level, msg)
+        for h in self.handlers or getLogger().handlers:
+            h.emit(self.record)
+
+    def _with_traceback(self, msg, exc_info):
+        text = self._traceback(exc_info)
+        # as CPython has it: the traceback on the lines after the message
+        return "%s\n%s" % (msg, text) if text else msg
+
     def log(self, level, msg, *args, exc_info=None):
         if self.isEnabledFor(level):
-            if args:
-                if isinstance(args[0], dict):
-                    args = args[0]
-                msg = msg % args
-            if exc_info:
-                text = self._traceback(exc_info)
-                if text:
-                    # as CPython has it: the traceback on the lines after the message
-                    msg = "%s\n%s" % (msg, text)
-            self.record.set(self.name, level, msg)
-            handlers = self.handlers
-            if not handlers:
-                handlers = getLogger().handlers
-            for h in handlers:
-                h.emit(self.record)
+            self._log(level, msg, args, exc_info)
 
     def debug(self, msg, *args, exc_info=None):
-        self.log(DEBUG, msg, *args, exc_info=exc_info)
+        if self.isEnabledFor(DEBUG):
+            self._log(DEBUG, msg, args, exc_info)
 
     def info(self, msg, *args, exc_info=None):
-        self.log(INFO, msg, *args, exc_info=exc_info)
+        if self.isEnabledFor(INFO):
+            self._log(INFO, msg, args, exc_info)
 
     def warning(self, msg, *args, exc_info=None):
-        self.log(WARNING, msg, *args, exc_info=exc_info)
+        if self.isEnabledFor(WARNING):
+            self._log(WARNING, msg, args, exc_info)
 
     def error(self, msg, *args, exc_info=None):
-        self.log(ERROR, msg, *args, exc_info=exc_info)
+        if self.isEnabledFor(ERROR):
+            self._log(ERROR, msg, args, exc_info)
 
     def critical(self, msg, *args, exc_info=None):
-        self.log(CRITICAL, msg, *args, exc_info=exc_info)
+        if self.isEnabledFor(CRITICAL):
+            self._log(CRITICAL, msg, args, exc_info)
 
     def exception(self, msg, *args, exc_info=True):
-        self.log(ERROR, msg, *args, exc_info=exc_info)
+        if self.isEnabledFor(ERROR):
+            self._log(ERROR, msg, args, exc_info)
 
     def addHandler(self, handler):
         self.handlers.append(handler)
@@ -240,32 +241,39 @@ def getLogger(name=None):
     return _loggers[name]
 
 
+def _root_log(level, msg, args, exc_info):
+    # As Logger's helpers: the arguments as a tuple, see Logger._log.
+    root = getLogger()
+    if root.isEnabledFor(level):
+        root._log(level, msg, args, exc_info)
+
+
 def log(level, msg, *args, exc_info=None):
-    getLogger().log(level, msg, *args, exc_info=exc_info)
+    _root_log(level, msg, args, exc_info)
 
 
 def debug(msg, *args, exc_info=None):
-    getLogger().debug(msg, *args, exc_info=exc_info)
+    _root_log(DEBUG, msg, args, exc_info)
 
 
 def info(msg, *args, exc_info=None):
-    getLogger().info(msg, *args, exc_info=exc_info)
+    _root_log(INFO, msg, args, exc_info)
 
 
 def warning(msg, *args, exc_info=None):
-    getLogger().warning(msg, *args, exc_info=exc_info)
+    _root_log(WARNING, msg, args, exc_info)
 
 
 def error(msg, *args, exc_info=None):
-    getLogger().error(msg, *args, exc_info=exc_info)
+    _root_log(ERROR, msg, args, exc_info)
 
 
 def critical(msg, *args, exc_info=None):
-    getLogger().critical(msg, *args, exc_info=exc_info)
+    _root_log(CRITICAL, msg, args, exc_info)
 
 
 def exception(msg, *args, exc_info=True):
-    getLogger().exception(msg, *args, exc_info=exc_info)
+    _root_log(ERROR, msg, args, exc_info)
 
 
 def shutdown():
